@@ -61,12 +61,24 @@ class _VoidScreenState extends State<VoidScreen>
       return;
     }
 
+    await _preloadAudio();
+
     if (lastOpened == 0 || now - lastOpened >= 86400000) {
       prefs.setInt('lastOpened', now);
       _voidCounter++;
       prefs.setInt('voidCounter', _voidCounter);
       setState(() => _canPlay = true);
       _beginWhisper();
+    }
+  }
+
+  Future<void> _preloadAudio() async {
+    try {
+      await player.setSourceAsset('whisper.mp3');
+      await player.setSourceAsset('final_whisper.mp3');
+      debugPrint("Audio preloaded successfully.");
+    } catch (e) {
+      debugPrint("Audio preload failed: \$e");
     }
   }
 
@@ -95,8 +107,19 @@ class _VoidScreenState extends State<VoidScreen>
   }
 
   void _exitApp() {
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const ExitScreen()),
+    Navigator.of(context).push(_createFadeRoute(const ExitScreen()));
+  }
+
+  Route _createFadeRoute(Widget screen) {
+    return PageRouteBuilder(
+      pageBuilder: (context, animation, secondaryAnimation) => screen,
+      transitionsBuilder: (context, animation, secondaryAnimation, child) {
+        return FadeTransition(
+          opacity: animation,
+          child: child,
+        );
+      },
+      transitionDuration: const Duration(milliseconds: 800),
     );
   }
 
@@ -107,7 +130,7 @@ class _VoidScreenState extends State<VoidScreen>
   }
 
   void _launchMerch() async {
-    final url = Uri.parse("https://yourmerchsite.com"); // replace
+    final url = Uri.parse("https://yourmerchsite.com");
     if (await canLaunchUrl(url)) {
       await launchUrl(url, mode: LaunchMode.externalApplication);
     }
