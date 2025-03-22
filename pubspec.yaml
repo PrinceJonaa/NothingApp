@@ -1,0 +1,24 @@
+name: nothing_app
+description: A mysterious whisper from the void.
+publish_to: 'none'
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  shared_preferences: ^2.2.2
+  audioplayers: ^5.2.1
+  url_launcher: ^6.2.5
+  permission_handler: ^11.0.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/whisper.mp3
+    - assets/final_whisper.mp3
