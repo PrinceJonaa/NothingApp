@@ -2,8 +2,18 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'dart:async';
+
+// Constants
+const String prefLastOpened = 'lastOpened';
+const String prefVoidCounter = 'voidCounter';
+const String prefSilentMode = 'silentMode';
+const String prefAppLocked = 'appLocked';
+const String assetWhisper = 'assets/whisper.mp3';
+const String assetFinalWhisper = 'assets/final_whisper.mp3';
+const int visitThreshold = 33;
+const int millisecondsInDay = 86400000;
+const String merchUrl = "https://yourmerchsite.com"; // Placeholder
 
 void main() {
   runApp(const NothingApp());
@@ -30,7 +40,7 @@ class VoidScreen extends StatefulWidget {
 
 class _VoidScreenState extends State<VoidScreen>
     with SingleTickerProviderStateMixin {
-  bool _canPlay = false;
+  bool _canPlay = false; // Determines if the whisper sequence should run
   bool _silentMode = false;
   bool _showSettings = false;
   bool _showPulse = false;
@@ -42,68 +52,92 @@ class _VoidScreenState extends State<VoidScreen>
   @override
   void initState() {
     super.initState();
-    _initSettings();
+    _initializeVoidState();
   }
 
-  Future<void> _initSettings() async {
-    await _requestPermissions();
+  @override
+  void dispose() {
+    player.dispose(); // Release audio player resources
+    super.dispose();
+  }
 
-    final prefs = await SharedPreferences.getInstance();
-    final lastOpened = prefs.getInt('lastOpened') ?? 0;
-    final now = DateTime.now().millisecondsSinceEpoch;
-
-    _voidCounter = prefs.getInt('voidCounter') ?? 0;
-    _silentMode = prefs.getBool('silentMode') ?? false;
-    _appLocked = prefs.getBool('appLocked') ?? false;
+  Future<void> _initializeVoidState() async {
+    // Storage permission is generally not needed for assets/shared_prefs
+    // await _requestPermissions();
+    await _loadPreferences();
 
     if (_appLocked) {
-      setState(() => _canPlay = false);
-      return;
+      setState(() => _canPlay = false); // Ensure UI reflects locked state
+      return; // Don't proceed if locked
     }
 
     await _preloadAudio();
+    await _checkDailyVisit();
+  }
 
-    if (lastOpened == 0 || now - lastOpened >= 86400000) {
-      prefs.setInt('lastOpened', now);
+  Future<void> _loadPreferences() async {
+    final prefs = await SharedPreferences.getInstance();
+    _voidCounter = prefs.getInt(prefVoidCounter) ?? 0;
+    _silentMode = prefs.getBool(prefSilentMode) ?? false;
+    _appLocked = prefs.getBool(prefAppLocked) ?? false;
+    // No need to call setState here as this runs before the first build
+  }
+
+  Future<void> _checkDailyVisit() async {
+    final prefs = await SharedPreferences.getInstance();
+    final lastOpened = prefs.getInt(prefLastOpened) ?? 0;
+    final now = DateTime.now().millisecondsSinceEpoch;
+
+    if (lastOpened == 0 || now - lastOpened >= millisecondsInDay) {
+      prefs.setInt(prefLastOpened, now);
       _voidCounter++;
-      prefs.setInt('voidCounter', _voidCounter);
-      setState(() => _canPlay = true);
-      _beginWhisper();
+      prefs.setInt(prefVoidCounter, _voidCounter);
+      setState(() => _canPlay = true); // Enable the whisper sequence
+      _beginWhisper(); // Start the sequence
+    } else {
+      setState(() => _canPlay = false); // Not time yet
     }
   }
 
   Future<void> _preloadAudio() async {
     try {
-      await player.setSourceAsset('whisper.mp3');
-      await player.setSourceAsset('final_whisper.mp3');
+      // Preload both assets for potentially faster playback later
+      await player.setSource(AssetSource(assetWhisper));
+      await player.setSource(AssetSource(assetFinalWhisper));
       debugPrint("Audio preloaded successfully.");
     } catch (e) {
-      debugPrint("Audio preload failed: \$e");
+      debugPrint("Audio preload failed: $e");
+      // Consider showing an error to the user or logging more formally
     }
   }
 
-  Future<void> _requestPermissions() async {
-    await Permission.storage.request();
-  }
+  // Removed _requestPermissions as it's likely unnecessary
 
   Future<void> _beginWhisper() async {
+    if (!_canPlay || _appLocked) return; // Double check state
+
     setState(() => _showPulse = true);
-    await Future.delayed(const Duration(seconds: 10));
+    await Future.delayed(const Duration(seconds: 10)); // Pulse duration
+    if (!mounted) return; // Check if widget is still in the tree
     setState(() => _showPulse = false);
 
-    if (_voidCounter >= 33) {
-      await player.play(AssetSource('final_whisper.mp3'));
-      await Future.delayed(const Duration(seconds: 5));
-      _showFinalMessage();
-      return;
+    try {
+      if (_voidCounter >= visitThreshold) {
+        await player.play(AssetSource(assetFinalWhisper));
+        await Future.delayed(const Duration(seconds: 5)); // Listen duration
+        if (mounted) _showFinalMessage();
+      } else {
+        if (!_silentMode) {
+          await player.play(AssetSource(assetWhisper));
+          await Future.delayed(const Duration(seconds: 5)); // Listen duration
+        }
+        if (mounted) _exitApp();
+      }
+    } catch (e) {
+      debugPrint("Error playing audio: $e");
+      // Handle playback error, maybe show a message or just exit
+      if (mounted) _exitApp();
     }
-
-    if (!_silentMode) {
-      await player.play(AssetSource('whisper.mp3'));
-      await Future.delayed(const Duration(seconds: 5));
-    }
-
-    _exitApp();
   }
 
   void _exitApp() {
@@ -126,13 +160,21 @@ class _VoidScreenState extends State<VoidScreen>
   void _toggleSilentMode() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() => _silentMode = !_silentMode);
-    prefs.setBool('silentMode', _silentMode);
+    prefs.setBool(prefSilentMode, _silentMode);
   }
 
   void _launchMerch() async {
-    final url = Uri.parse("https://yourmerchsite.com");
-    if (await canLaunchUrl(url)) {
-      await launchUrl(url, mode: LaunchMode.externalApplication);
+    final url = Uri.parse(merchUrl);
+    try {
+      if (await canLaunchUrl(url)) {
+        await launchUrl(url, mode: LaunchMode.externalApplication);
+      } else {
+        debugPrint("Could not launch $url");
+        // Optionally show a message to the user
+      }
+    } catch (e) {
+      debugPrint("Error launching URL: $e");
+      // Optionally show a message to the user
     }
   }
 
@@ -158,9 +200,12 @@ class _VoidScreenState extends State<VoidScreen>
           TextButton(
             onPressed: () async {
               final prefs = await SharedPreferences.getInstance();
-              prefs.setBool('appLocked', true);
-              Navigator.of(context).pop();
-              setState(() => _canPlay = false);
+              prefs.setBool(prefAppLocked, true);
+              Navigator.of(context).pop(); // Close the dialog
+              setState(() {
+                _appLocked = true; // Update state immediately
+                _canPlay = false;
+              });
             },
             child: const Text("Close", style: TextStyle(color: Colors.white)),
           ),
@@ -180,45 +225,52 @@ class _VoidScreenState extends State<VoidScreen>
       child: Scaffold(
         backgroundColor: Colors.black,
         body: Stack(
+          alignment: Alignment.center,
           children: [
-            Center(
-              child: _showSettings
-                  ? Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Text("Hidden Menu",
-                            style: TextStyle(color: Colors.white, fontSize: 20)),
-                        const SizedBox(height: 20),
-                        Text("Void Visits: $_voidCounter",
-                            style: const TextStyle(color: Colors.white)),
-                        const SizedBox(height: 10),
-                        TextButton(
-                          onPressed: _toggleSilentMode,
-                          child: Text(
-                            _silentMode ? "Whisper: OFF" : "Whisper: ON",
-                            style: const TextStyle(color: Colors.white),
-                          ),
-                        ),
-                        const SizedBox(height: 10),
-                        TextButton(
-                          onPressed: _launchMerch,
-                          child: const Text(
-                            "Merch from the Void",
-                            style: TextStyle(color: Colors.white),
-                          ),
-                        ),
-                      ],
-                    )
-                  : const SizedBox.shrink(),
-            ),
-            if (_showPulse) const Center(child: AnimatedPulse()),
+            // Show hidden menu if toggled
+            if (_showSettings) _buildHiddenMenu(),
+            // Show pulse animation if active
+            if (_showPulse) const AnimatedPulse(),
+            // If nothing else is showing, maybe a subtle background element?
+            // For now, it's just black.
           ],
         ),
       ),
     );
   }
+
+  // Extracted widget builder for the hidden menu
+  Widget _buildHiddenMenu() {
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        const Text("Hidden Menu",
+            style: TextStyle(color: Colors.white, fontSize: 20)),
+        const SizedBox(height: 20),
+        Text("Void Visits: $_voidCounter",
+            style: const TextStyle(color: Colors.white)),
+        const SizedBox(height: 10),
+        TextButton(
+          onPressed: _toggleSilentMode,
+          child: Text(
+            _silentMode ? "Whisper: OFF" : "Whisper: ON",
+            style: const TextStyle(color: Colors.white),
+          ),
+        ),
+        const SizedBox(height: 10),
+        TextButton(
+          onPressed: _launchMerch,
+          child: const Text(
+            "Merch from the Void",
+            style: TextStyle(color: Colors.white),
+          ),
+        ),
+      ],
+    );
+  }
 }
 
+// --- AnimatedPulse Widget (unchanged) ---
 class AnimatedPulse extends StatefulWidget {
   const AnimatedPulse({super.key});
 
